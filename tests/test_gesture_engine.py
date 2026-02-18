@@ -174,22 +174,31 @@ class TestGestureRecognition(unittest.TestCase):
         self.assertTrue(len(erase_pts) > 0, "should have erase points")
 
     def test_change_color_gesture(self):
-        """index + middle up = change_color"""
+        """index + middle + ring up = change_color"""
         engine = self._fresh_engine()
-        lm = make_hand([False, True, True, False, False])
+        lm = make_hand([False, True, True, True, False])
         hand_data = {"right": lm, "left": None}
 
         gesture, _, _ = run_gesture_n_times(engine, hand_data, 10)
         self.assertEqual(gesture, "change_color", f"expected change_color, got {gesture}")
 
-    def test_fist_gesture(self):
-        """all down = switch_brush"""
+    def test_switch_brush_gesture(self):
+        """four fingers up (no thumb) = switch_brush"""
         engine = self._fresh_engine()
-        lm = make_hand([False, False, False, False, False])
+        lm = make_hand([False, True, True, True, True])
         hand_data = {"right": lm, "left": None}
 
         gesture, _, _ = run_gesture_n_times(engine, hand_data, 10)
         self.assertEqual(gesture, "switch_brush", f"expected switch_brush, got {gesture}")
+
+    def test_idle_two_fingers(self):
+        """index + middle up = idle"""
+        engine = self._fresh_engine()
+        lm = make_hand([False, True, True, False, False])
+        hand_data = {"right": lm, "left": None}
+
+        gesture, _, _ = run_gesture_n_times(engine, hand_data, 6)
+        self.assertEqual(gesture, "idle", f"expected idle, got {gesture}")
 
     def test_idle_no_hands(self):
         """no hands = idle"""

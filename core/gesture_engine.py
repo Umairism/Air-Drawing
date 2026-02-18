@@ -230,26 +230,28 @@ class GestureEngine:
         up_count = sum([index, middle, ring, pinky])
         gesture = "idle"
 
-        # pinch grab with hysteresis
+        # pinch grab with hysteresis (thumb-index pinch only)
         if self._pinching:
             if pinch_ratio > self.PINCH_RATIO_OFF:
                 self._pinching = False
             else:
                 gesture = "grab"
         else:
-            if pinch_ratio < self.PINCH_RATIO_ON and up_count <= 1:
+            if pinch_ratio < self.PINCH_RATIO_ON:
                 self._pinching = True
                 gesture = "grab"
 
         if gesture != "grab":
-            if index and not middle and not ring and not pinky:
-                gesture = "draw"
-            elif up_count >= 3 and index and middle:
+            if thumb and index and middle and ring and pinky:
                 gesture = "erase"
-            elif index and middle and not ring and not pinky:
-                gesture = "change_color"
-            elif up_count == 0 and not thumb:
+            elif not thumb and index and middle and ring and pinky:
                 gesture = "switch_brush"
+            elif index and middle and ring and not pinky:
+                gesture = "change_color"
+            elif index and not middle and not ring and not pinky:
+                gesture = "draw"
+            elif index and middle and not ring and not pinky:
+                gesture = "idle"
 
         gesture = self._debounce(gesture)
         return gesture, tip_pos, erase_points

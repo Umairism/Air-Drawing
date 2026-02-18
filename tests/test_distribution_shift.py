@@ -106,7 +106,7 @@ class TestHandSizeDistribution(unittest.TestCase):
         self.gestures = {
             "draw": [False, True, False, False, False],
             "erase": [True, True, True, True, True],
-            "change_color": [False, True, True, False, False],
+            "change_color": [False, True, True, True, False],
         }
 
     def test_gesture_recognition_across_scales(self):
@@ -205,7 +205,7 @@ class TestCameraFOVDistribution(unittest.TestCase):
     def test_bottom_right_corner(self):
         """hand in the bottom-right corner at 640x480"""
         engine = GestureEngine()
-        fingers = [False, True, True, False, False]  # change_color
+        fingers = [False, True, True, True, False]  # change_color
 
         for _ in range(8):
             lm = _build_hand(580, 430, scale=0.7, finger_up=fingers, noise=2.0)
@@ -521,7 +521,7 @@ class TestCombinedDistributionShift(unittest.TestCase):
         gestures = {
             "draw": [False, True, False, False, False],
             "erase": [True, True, True, True, True],
-            "change_color": [False, True, True, False, False],
+            "change_color": [False, True, True, True, False],
         }
 
         for gesture_name, fingers in gestures.items():
