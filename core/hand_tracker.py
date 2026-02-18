@@ -62,7 +62,12 @@ class HandTracker:
 
         # use real time so mediapipe tracking doesnt drift
         ts_ms = int((time.monotonic() - self._start_time) * 1000)
-        result = self.landmarker.detect_for_video(mp_image, ts_ms)
+        try:
+            result = self.landmarker.detect_for_video(mp_image, ts_ms)
+        except Exception as e:
+            # mediapipe can occasionally choke on weird frames
+            # just return last good data instead of crashing
+            return self._last_hand_data
         self._last_result = result
 
         hand_data = {"left": None, "right": None}

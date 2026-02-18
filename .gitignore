@@ -1,11 +1,29 @@
 __pycache__/
 *.pyc
 *.pyo
+
+# data and models
 gesture_data.csv
 gesture_model.pkl
+gesture_model_meta.json
+custom_gestures.json
 hand_landmarker.task
-.vscode/
-.venv/
+
+# benchmark / profiler output
+benchmark_log.json
+benchmark_results.json
+beta_tuning_results.json
+case_study_data.json
+snr_analysis_data.json
+snr_stochastic_data.json
+ml_overrides.log
+
+# packaging
 build/
 dist/
+*.egg-info/
 *.spec
+
+# editor / environment
+.vscode/
+.venv/

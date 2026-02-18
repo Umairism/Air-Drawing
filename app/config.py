@@ -30,10 +30,28 @@ COLORS = [
 
 # gesture timing
 DEBOUNCE_FRAMES = 3
-GESTURE_COOLDOWN = 0.4  # seconds between gesture switches
+GESTURE_COOLDOWN = 0.5  # seconds between mode switches (color/brush)
 
 # ui
 SHOW_FPS = True
 SHOW_LANDMARKS = True
 UI_FONT_SCALE = 0.6
 UI_THICKNESS = 2
+
+# noise filter
+NOISE_FILTER_ENABLED = True
+LOW_CONFIDENCE_THRESHOLD = 0.3  # below this, skip drawing to avoid jitter artifacts
+
+# profiler (prints timing breakdown on quit, off by default)
+PROFILER_ENABLED = False
+
+# ML hybrid mode
+# when a trained model exists, use it alongside rules.
+# ML_CONFIDENCE_THRESHOLD controls how confident the model needs to be
+# before we trust it over the rule engine. set to 1.0 to disable ML.
+ML_HYBRID_ENABLED = True
+ML_CONFIDENCE_THRESHOLD = 0.75
+ML_MODEL_PATH = "gesture_model.pkl"
+
+# benchmarking (writes session metrics to benchmark_log.json on exit)
+BENCHMARK_ENABLED = True
