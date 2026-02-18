@@ -1,30 +1,32 @@
-# Designing a Modular Multi-Hand Gesture Recognition Framework with Hybrid Rule-Based and ML Detection
+# Building a Gesture Recognition Framework That Actually Works in the Real World
 
 ## Abstract
 
-Hand gesture recognition in real-time video is deceptively hard. MediaPipe gives you 21 landmarks per hand, but the gap between raw coordinates and reliable gesture classification is where most projects fall apart. This article documents the architecture of a modular gesture recognition framework that combines deterministic rule-based detection with a machine learning classifier, connected through a confidence-gated hybrid pipeline. The system processes dual hands at 30+ FPS on consumer hardware, implements a three-stage noise filtering pipeline based on the one-euro filter, and uses rotation-invariant feature extraction to maintain accuracy across hand orientations. We present empirical benchmarks quantifying the latency-stability tradeoff of the filtering stack and discuss the design decisions that shaped each module.
+Hand gesture recognition sounds simple until you try to build it. MediaPipe hands you 21 landmarks per hand, and from there you're on your own — the gap between those raw coordinates and gesture classifications that don't flicker every other frame is where most projects quietly die. This article walks through the architecture of a modular gesture recognition framework I built that pairs a deterministic rule-based engine with an ML classifier through a confidence-gated hybrid pipeline. It handles two hands at 30+ FPS on normal hardware, runs a three-stage noise filtering stack rooted in the one-euro filter, and uses rotation-invariant features so the classifier doesn't care which way your hand is tilted. I'll go through the empirical benchmarks that shaped the filter tuning, explain why the gesture engine has hysteresis in three separate places, and get into the design decisions that I think matter most.
 
 ---
 
-## 1. Introduction
+## Where This Started
 
-Most air-drawing demos are single-file scripts: detect a hand, check if the index finger is up, draw a line. They work in controlled conditions and break everywhere else. Jittery landmarks cause wavy lines, gesture detection flickers between states, and the code is too tangled to extend.
+If you look at most air-drawing projects on GitHub, they're one file. Detect a hand, check if the index finger is up, draw a line. They demo well. They also break the second you move your hand a little too fast, or the lighting changes, or you tilt your wrist 20 degrees. The landmarks start jittering, the gesture detection starts flickering between "draw" and "idle" ten times a second, and the drawn lines look like they were made during an earthquake.
 
-This project started from a different premise: build a framework, not a demo. The architecture needed to support multi-hand tracking, tool switching, custom gesture registration, and an ML classification pipeline — all without any single module knowing about the others.
+I wanted to build something that could actually survive real conditions. Multi-hand tracking, tool switching, custom gesture registration, an ML pipeline that can take over when rules fall short — but structured so that no module has to know about any of the others. The kind of thing where you can rip out the noise filter and the gesture engine still works (worse, but it works). Or swap the ML model without touching a single line in the drawing code.
 
-The core challenge is threefold:
+The hard parts turned out to be:
 
-1. **Noise**: MediaPipe landmarks jitter by several pixels between frames, even when the hand is perfectly still.
-2. **Ambiguity**: The difference between "index finger pointing" and "index finger pointing with a slightly bent middle finger" is a few degrees at a joint. Rule-based thresholds are fragile.
-3. **Orientation**: A hand tilted 30° shouldn't produce different gesture classifications, but raw coordinate-based features will.
+**Noise.** MediaPipe landmarks jitter 3–8 pixels even when your hand is completely still. For gesture recognition you can live with it. For drawing it's a disaster — every line you draw inherits that jitter and looks shaky.
 
-The system addresses these through layered signal processing, a dual-check gesture engine with hysteresis, and a hybrid detection pipeline that lets rule-based and ML classifiers cross-validate each other.
+**Ambiguity.** The difference between "index finger pointing" and "index finger pointing but the middle finger is a little bent" is maybe 15 degrees at one joint. Put a hard threshold there and it'll flicker back and forth forever.
+
+**Orientation.** Tilt your hand 30 degrees and suddenly the same gesture produces different landmark coordinates. If your features are based on raw positions, rotation kills you.
+
+The system handles these through layered filtering, a dual-check gesture engine that uses hysteresis to avoid flickering, and a hybrid pipeline where the rules and the ML model cross-validate each other.
 
 ---
 
-## 2. System Architecture
+## How the Code is Organized
 
-The codebase is organized into three layers with strict dependency boundaries:
+Three layers. Strict boundaries between them.
 
 ```
 core/               # signal processing and detection
@@ -49,270 +51,226 @@ ml/                 # machine learning pipeline
   benchmark.py          # synthetic performance profiling
 ```
 
-Data flows in one direction: `camera → tracker → noise_filter → gesture_engine → state → canvas/tools → ui`. The ML pipeline sits alongside the gesture engine as an optional enhancer, not a replacement.
+Data flows one way: `camera → tracker → noise_filter → gesture_engine → state → canvas/tools → ui`. The ML pipeline sits next to the gesture engine as an optional enhancer. It can improve things, but the system doesn't need it to function.
 
-Each module communicates through plain data structures — lists of tuples for landmarks `(id, x, y, z)`, strings for gesture names, floats for confidence scores. No module imports from a sibling in the same layer except through `config.py`.
+Modules talk through plain data — lists of tuples for landmarks `(id, x, y, z)`, strings for gesture names, floats for confidence. Nothing fancy. No module reaches into a sibling in the same layer except through `config.py`.
 
 ---
 
-## 3. Signal Processing Pipeline
+## The Noise Problem (And Three Stages of Dealing With It)
 
-### 3.1 The Noise Problem
+MediaPipe's hand model is fast — under 10ms per frame. But the landmarks it spits out are noisy. Hold your hand perfectly still and watch the fingertip coordinates bounce around by 3–8 pixels every frame. For gesture detection this is annoying. For drawing it's actively harmful, because your drawn line inherits all that jitter.
 
-MediaPipe's hand landmark model runs in under 10ms per frame, but the landmarks it produces are noisy. Even with a stationary hand, fingertip positions jitter by 3–8 pixels frame-to-frame. For gesture recognition this is annoying; for drawing it's destructive — every drawn line inherits that jitter.
+The noise filter lives between the tracker and the gesture engine and processes landmarks through three stages. I'll go through each one.
 
-The noise filter sits between the hand tracker and the gesture engine, processing landmarks through three stages:
+### Velocity Clamping
 
-### 3.2 Stage 1: Velocity Clamping
-
-When MediaPipe briefly loses a hand and re-detects it in the next frame, the landmark positions can teleport across the frame. The velocity clamp catches these discontinuities:
+Sometimes MediaPipe loses a hand for a frame and then re-detects it. When that happens, the landmarks teleport — suddenly they're 200 pixels away from where they were last frame. The velocity clamp catches these jumps:
 
 ```
 max_allowed_movement = MAX_VELOCITY × (dt / 0.033)
 ```
 
-If any landmark moved further than `max_allowed_movement` pixels since the last frame, its displacement is scaled back to the maximum in the same direction. The velocity threshold (180 px at 30 FPS) corresponds to roughly three hand-widths of movement per frame — fast enough to never interfere with normal motion, strict enough to catch re-detection jumps.
+If a landmark moved further than `max_allowed_movement` since last frame, its movement gets scaled back to the maximum in the same direction. The threshold (180px at 30 FPS) is about three hand-widths of movement per frame — way faster than anyone actually moves, but strict enough to catch re-detection teleports.
 
-### 3.3 Stage 2: One-Euro Filter
+### The One-Euro Filter
 
-The one-euro filter is an adaptive low-pass filter designed specifically for noisy interactive signals. Unlike a fixed moving average, it adjusts its smoothing based on signal velocity:
+This is the heart of the smoothing. The one-euro filter is an adaptive low-pass filter built specifically for noisy interactive signals, and the key insight is that it changes its behavior based on how fast the signal is moving:
 
-- When the hand is still, the cutoff frequency drops and the filter smooths aggressively.
-- When the hand moves fast, the cutoff rises and the filter lets the signal through with minimal lag.
+When the hand is still, the cutoff frequency drops low and the filter smooths aggressively — kills the jitter. When the hand moves fast, the cutoff rises and the filter mostly gets out of the way — low lag. This is exactly the behavior you want for drawing: smooth when hovering, responsive when stroking.
 
-The implementation maintains per-landmark state (filtered position and filtered velocity). The smoothing factor α is computed as:
+The math behind it: the smoothing factor α depends on the cutoff frequency, which itself adapts to velocity:
 
 $$\alpha = \frac{1}{1 + \frac{\tau}{\Delta t}}, \quad \text{where } \tau = \frac{1}{2\pi f_c}$$
 
-The adaptive cutoff frequency $f_c$ is:
+The adaptive cutoff $f_c$ is:
 
 $$f_c = f_{min} + \beta \cdot |\dot{x}_{filtered}|$$
 
-Where $f_{min}$ (MIN_CUTOFF = 1.5) controls smoothness at rest and $\beta$ (0.007) controls responsiveness during motion. These values were tuned empirically — lower $\beta$ values caused visible lag during fast drawing strokes, higher values let too much jitter through during static gestures.
+$f_{min}$ (set to 1.5) controls how smooth things are at rest. $\beta$ (0.007 for idle, 0.08 for drawing — more on this later) controls how much the filter reacts to speed. Getting these values right took a fair amount of trial and error. Lower β values looked great when the hand was still but created visible lag during fast drawing strokes. Higher values kept up with motion but let too much jitter through during gestures.
 
-### 3.4 Stage 3: Confidence Scoring
+### Confidence Scoring
 
-The filter tracks the average discrepancy between raw and filtered landmark positions over a sliding window. High discrepancy means the input is noisy. This is converted to a 0–1 confidence score through a sigmoid mapping:
+The filter also tracks how much the raw and filtered positions disagree over a sliding window. Lots of disagreement means noisy input. This gets converted into a 0–1 confidence score:
 
 $$\text{score} = \frac{1}{1 + \left(\frac{\bar{j}}{j_{threshold}}\right)^2} \times \min\left(\frac{n}{5}, 1\right)$$
 
-Where $\bar{j}$ is the mean jitter over the last 10 frames, $j_{threshold}$ = 4.0 pixels, and the $\min(n/5, 1)$ term is a warmup ramp that prevents false high-confidence on the first few frames.
+$\bar{j}$ is mean jitter over the last 10 frames, $j_{threshold}$ is 4.0 pixels, and the $\min(n/5, 1)$ piece is a warmup ramp so the score doesn't report high confidence on the first couple frames before it has enough data.
 
-Downstream modules use this score to:
-- Skip drawing when confidence drops below 0.3 (avoids jitter artifacts)
-- Display a "tracking unstable" indicator in the UI
-- Widen gesture debounce windows during uncertain periods
+The rest of the system uses this score in a few ways: skip drawing when confidence drops below 0.3 (avoids drawing jitter artifacts), show a "tracking unstable" warning in the UI, and widen the debounce windows when the signal is unreliable.
 
-### 3.5 Latency-Stability Tradeoff: Measured
+### What the Numbers Look Like
 
-The filtering stack was benchmarked with 2000 synthetic frames of simulated hand motion (sinusoidal trajectories with Gaussian noise):
+Benchmarked with 2000 synthetic frames of sinusoidal hand motion plus Gaussian noise:
 
 | Metric | Value |
 |---|---|
-| Processing overhead | +0.102 ms per frame (91% over raw) |
+| Processing overhead | +0.102 ms per frame |
 | Mean positional lag | 64.0 px |
 | p95 positional lag | 101.0 px |
-| Jitter reduction ratio | 8.4× (raw avg 4.3 px → smoothed avg 0.5 px) |
+| Jitter reduction | 8.4× (4.3 px raw → 0.5 px smoothed) |
 | Gesture engine alone | avg 0.115 ms, p99 0.268 ms |
 | Noise filter alone | avg 0.118 ms, p99 0.394 ms |
 
-The 0.102 ms overhead is negligible at 30 FPS (each frame has a 33.3 ms budget). The 8.4× jitter reduction transforms hand-drawn lines from visibly shaky to smooth. The 64 px mean positional lag sounds large in absolute terms, but it represents the filter doing its job — the filtered position trails the raw position because the filter is suppressing high-frequency noise. In practice, the adaptive cutoff ensures that during fast strokes the lag drops significantly (the one-euro filter was designed exactly for this scenario).
+The 0.102 ms overhead is nothing at 30 FPS (33.3 ms budget per frame). The 8.4× jitter reduction is the difference between visibly shaky lines and smooth ones. The 64px lag sounds bad, but that's the filter doing its job — it's suppressing high-frequency noise by letting the filtered position trail the raw one. During fast drawing strokes the adaptive cutoff kicks in and lag drops substantially. (The dynamic beta tuning covered in the case study brings this down much further for drawing specifically.)
 
 ---
 
-## 4. Gesture Recognition Engine
+## The Gesture Engine
 
-### 4.1 Dual-Check Detection
+### How Finger Detection Actually Works
 
-Finger state detection uses both joint angle and tip position as independent checks. A finger is classified as "open" only when both conditions agree:
+I went through a few iterations on this. Simple angle thresholds? They flicker at the boundary. Tip position only? Doesn't work when the finger is straight but tucked behind the palm. What ended up working is a dual check — both conditions have to agree before a finger counts as "open":
 
-1. **Angle check**: The PIP joint angle exceeds a threshold. A straight finger has a PIP angle near 180°; a curled finger drops below 120°.
-2. **Distance check**: The fingertip is further from the wrist than the PIP joint (by at least 85% of the PIP-wrist distance). This catches cases where the finger is technically straight but tucked behind the palm.
+**Angle check**: The PIP joint angle has to exceed a threshold. A straight finger sits near 180°, a curled one drops below 120°.
 
-Using separate thresholds for opening (>140° and tip further) and closing (<115° or <135° without tip further) creates a **hysteresis band** that prevents rapid toggling when a finger is near the boundary.
+**Distance check**: The fingertip has to be further from the wrist than the PIP joint is (by at least 85% of the PIP-wrist distance). This catches the annoying case where the finger is technically extended but folded behind the palm.
 
-### 4.2 Landmark Smoothing
+The thresholds for opening a finger (>140° and tip is further out) are different from the thresholds for closing it (<115°, or <135° without the distance condition met). That gap is the hysteresis band. Without it, a finger sitting right at the boundary would toggle open/closed every frame. With it, the finger has to move decisively past the threshold in one direction before it flips.
 
-Before evaluating finger states, the engine applies a 3-frame rolling average to the landmark positions. This is lighter than the noise filter's one-euro approach — it's specifically tuned for gesture stability rather than drawing accuracy. The smoothing buffer is independent of the noise filter and operates even when the noise filter is disabled.
+### Internal Landmark Smoothing
 
-### 4.3 Pinch Detection with Hysteresis
+Before checking finger states, the engine runs a 3-frame rolling average over the landmark positions. This is much lighter than the one-euro filter — it's not trying to produce smooth drawing coordinates, just trying to stabilize the finger state decisions. It runs independently of the noise filter and works even if the noise filter is turned off.
 
-The grab gesture (thumb-index pinch) uses hand-size-relative thresholds:
+### Pinch Detection
+
+The grab gesture uses a thumb-index pinch, and the distance is measured relative to hand size so it works regardless of how far the hand is from the camera:
 
 $$\text{pinch\_ratio} = \frac{\text{dist(thumb\_tip, index\_tip)}}{\text{dist(wrist, middle\_MCP)}}$$
 
-The gesture activates when the ratio drops below 0.28 and deactivates when it rises above 0.40. This hysteresis band prevents flickering at the pinch boundary — critical because pinch distance naturally oscillates a few pixels even when the user is holding a steady pinch.
+Activates at ratio < 0.28, deactivates at ratio > 0.40. That 0.12 hysteresis gap is critical — even when you're holding a steady pinch, the measured distance wobbles by a few pixels. Without the gap, the gesture would strobe on and off.
 
-### 4.4 Temporal Debouncing
+### Debouncing
 
-Every gesture change must persist for `DEBOUNCE_FRAMES` (3) consecutive frames before it's accepted. Additionally, mode-switching gestures (color change, brush toggle) have a `GESTURE_COOLDOWN` (0.5s) lockout to prevent accidental double-triggers.
+Every gesture transition has to hold for 3 consecutive frames before the engine accepts it. On top of that, mode-switching gestures (color change, brush toggle) have a 0.5 second cooldown to prevent accidental double-triggers. It sounds like a lot of layers, but each one catches a different class of mistake.
 
-### 4.5 Gesture Vocabulary
+### The Gesture Vocabulary
 
-| Gesture | Rule |
+| Gesture | What triggers it |
 |---|---|
 | `draw` | Index finger only, extended |
-| `erase` | All five fingers open (palm) |
-| `change_color` | Index + middle extended, others closed (peace sign) |
-| `switch_brush` | Index + middle + ring extended, others closed |
-| `grab` | Thumb-index pinch detected |
-| `clear_canvas` | Both hands showing simultaneous fists (multi-hand gesture) |
-| `idle` | None of the above |
+| `idle` | Index + middle extended, others closed |
+| `change_color` | Index + middle + ring extended, others closed |
+| `grab` | Thumb-index pinch |
+| `switch_brush` | Four fingers up (no thumb) |
+| `erase` | All five fingers open (full palm) |
+| `clear_canvas` | Both hands showing fists simultaneously |
+
+The ordering matters in the code. The engine checks from most-specific to least-specific — five fingers before four, four before three, and so on. If you checked "index up" before "index + middle up," you'd never trigger the two-finger gesture because the first check would always match first.
 
 ---
 
-## 5. ML Classification Pipeline
+## The ML Pipeline
 
-### 5.1 Feature Engineering
+### Why Not Just Use ML for Everything?
 
-The ML classifier doesn't see raw landmark coordinates. Instead, we extract a 20-dimensional feature vector engineered for invariance:
+I get asked this a lot. Short answer: the rule-based engine works on day one with zero training data. The ML model needs examples, and it needs examples of every gesture in every condition you care about. Miss a lighting condition or a hand size in training and the model produces garbage for that case — and you won't know until a user hits it.
 
-**5 PIP joint angles** (one per finger, thumb uses the average of MCP and IP angles). Joint angles are intrinsically rotation and scale-invariant — the angle between two bones doesn't change when you rotate the hand.
+So the architecture runs both in parallel. The rules provide a reliable baseline. The ML model can improve on it when it's confident.
 
-**5 fingertip-to-wrist distance ratios** and **5 fingertip-to-palm distance ratios**. Distances are divided by hand_size (wrist-to-middle-MCP distance), making them scale-invariant. But raw distances are NOT rotation-invariant — this is addressed below.
+### Feature Engineering
 
-**4 inter-finger spread angles** (index-middle, middle-ring, ring-pinky, thumb-index). These measure how the fingers fan out.
+The classifier never sees raw coordinates. Instead it gets a 20-dimensional feature vector designed for invariance:
 
-**1 pinch ratio** (thumb-tip to index-tip distance / hand_size).
+**5 PIP joint angles** — one per finger (thumb uses an average of MCP and IP angles). These are naturally rotation and scale invariant because the angle between two bones doesn't change when you rotate or resize the hand.
 
-### 5.2 Rotation Invariance
+**10 distance ratios** — 5 fingertip-to-wrist and 5 fingertip-to-palm distances, all divided by hand size (wrist to middle MCP distance). Scale invariant, but NOT rotation invariant in raw form — which is why we need the coordinate frame trick below.
 
-Distance ratios and spread angles depend on absolute landmark positions. If you compute the distance from a fingertip to the wrist in pixel coordinates, rotating the hand in the camera plane changes the result (different pixels, same physical pose).
+**4 spread angles** — index-middle, middle-ring, ring-pinky, thumb-index. Measures how the fingers fan out.
 
-The solution is to rotate all landmarks into a **hand-local coordinate frame** before computing features:
+**1 pinch ratio** — thumb tip to index tip distance, normalized by hand size.
 
-1. Set the **origin** at the wrist (landmark 0).
-2. Define the **y-axis** as the direction from wrist to middle finger MCP (landmark 9).
-3. Compute the perpendicular x-axis.
-4. Project all 21 landmarks into this frame using a 2D rotation matrix.
+### Making It Rotation Invariant
 
-In this local frame, the wrist is always at (0, 0) and the middle finger MCP is always directly above it on the y-axis, regardless of how the hand is rotated in the camera view.
+Here's the problem: if you compute a distance ratio from fingertip to wrist using pixel coordinates, and then the user rotates their hand 30 degrees, those pixel coordinates change even though the physical hand pose is identical. The features drift, the classifier gets confused.
 
-Joint angles (the first 5 features) don't need this treatment — they're already rotation-invariant by construction. But we apply the rotation before computing all distance-based features (the remaining 15) for consistency.
+The fix: rotate all landmarks into a hand-local coordinate frame before computing any distance-based features.
 
-**Verification**: Unit tests confirm that features extracted from a hand rotated by 45° and 90° match the features from the original orientation within a tolerance of 0.05 (normalized feature space).
+1. Wrist (landmark 0) becomes the origin.
+2. The direction from wrist to middle finger MCP (landmark 9) becomes the y-axis.
+3. Perpendicular to that is the x-axis.
+4. Project all 21 landmarks into this frame with a 2D rotation matrix.
 
-### 5.3 Model Training and Evaluation
+Now the wrist is always at (0,0) and the middle finger base is always straight up, regardless of how the hand is actually oriented in the camera view. The joint angle features (first 5) don't even need this — they're rotation invariant by construction. But we apply the rotation before computing all distance-based features (the other 15) anyway for consistency.
 
-The trainer supports SVM (RBF kernel) and k-NN (k=5, distance-weighted) classifiers. Training uses `StandardScaler` normalization, an 80/20 train-test split, and 5-fold cross-validation.
+I verified this with unit tests: features from a hand rotated 45° and 90° match the original within 0.05 in normalized feature space.
 
-Evaluation metrics computed during training:
-- **Accuracy** (cross-validated mean and standard deviation)
-- **Per-class precision, recall, and F1-score**
-- **Confusion matrix** (printed as a formatted table with gesture labels)
+### The Hybrid Override System
 
-The trained model, scaler, feature configuration, per-class metrics, and confusion matrix are all serialized into a single `.pkl` file. This means model evaluation results travel with the model — you can inspect a deployed model's training performance without re-running the training pipeline.
+Every frame where we have landmarks:
 
-### 5.4 Hybrid Detection: Confidence-Gated Override
+1. The rule engine classifies the gesture.
+2. The ML model independently predicts a gesture with a confidence score.
+3. If they agree — use the rules result. Done.
+4. If they disagree and ML confidence is above 0.75 — let ML override. Log it.
+5. If they disagree but ML confidence is below 0.75 — keep the rules result. Log the disagreement.
 
-The ML classifier runs alongside the rule-based engine, not as a replacement. On each frame where hand landmarks are available:
+The 0.75 threshold is deliberately conservative. The ML model has to be quite sure before it gets to override a rule that was hand-tuned and validated through 96 unit tests. This means the rules handle the common cases reliably, and the ML model only steps in when it's confident it knows better — usually at gesture boundaries where the rules' hard thresholds are weakest.
 
-1. The rule-based engine produces a gesture classification.
-2. The ML classifier independently predicts a gesture with a confidence score.
-3. If both agree → the rule-based result is used (no overhead).
-4. If they disagree and the ML confidence exceeds `ML_CONFIDENCE_THRESHOLD` (0.75) → the ML prediction overrides.
-5. If they disagree but ML confidence is below threshold → the rule-based result is kept.
+### Logging Everything
 
-This architecture has a key advantage: **the rule-based engine provides a reliable floor**. It doesn't need training data, works immediately, and handles edge cases that the ML model hasn't seen. The ML model provides a ceiling — when it's confident, it's often more accurate than hand-tuned thresholds, especially for gestures with subtle distinctions.
+Every override and disagreement goes to `ml_overrides.log` with the frame number, both gesture names, and the ML confidence. When the session ends, aggregate stats get dumped to `benchmark_log.json` — override rate, agreement rate, a confusion matrix mapping rule predictions to ML predictions, per-gesture confidence distributions.
 
-### 5.5 Override Observability
+This makes the whole hybrid system auditable after the fact. You can answer things like "is the ML model consistently disagreeing on the same gesture?" or "is there a gesture where ML confidence never gets above 0.6?" without adding debug prints and re-running.
 
-Every override and disagreement event is logged to `ml_overrides.log` with:
-- The rule-based gesture name
-- The ML gesture name
-- The ML confidence score
-- The frame number
+### Training
 
-On session exit, aggregate statistics are written to `benchmark_log.json`:
-- Override rate (what percentage of frames did ML actually take over)
-- Agreement rate (how often the two systems concurred)
-- A confusion matrix mapping rule-based gestures to ML predictions
-- Per-gesture confidence statistics (mean, min, max)
-
-This makes the hybrid system auditable. You can answer questions like "Is the ML model consistently overriding the same gesture?" or "Is there a gesture where ML confidence is systematically low?" without adding print statements.
+The trainer supports SVM (RBF kernel) and k-NN (k=5, distance-weighted). Standard workflow: `StandardScaler` normalization, 80/20 split, 5-fold cross-validation. It computes accuracy, per-class precision/recall/F1, and a confusion matrix. All of this gets serialized into the model file alongside the weights, so a deployed model carries its own evaluation report.
 
 ---
 
-## 6. Performance Profiling
+## Performance Profiling
 
-### 6.1 Per-Frame Instrumentation
+The profiler instruments each pipeline stage with start/stop calls and keeps a rolling window of the last 120 frames. I report percentiles instead of just averages, because averages lie.
 
-The profiler wraps each pipeline stage with `start(section)` / `stop(section)` calls and maintains a rolling window of the last 120 frames. Reporting uses percentiles, not just averages — p50 tells you the typical case, p95 tells you the occasional spike, and p99 tells you the worst-case-that-actually-happens.
+A system averaging 30 FPS might still stutter. If your p99 frame time is 80ms, one in every hundred frames takes nearly three frame budgets to process. The user sees a hitch every few seconds. Mean FPS hides this completely.
 
-| Section | Avg | p50 | p95 | p99 | Peak |
-|---|---|---|---|---|---|
-| Gesture engine | 0.115 ms | 0.094 ms | 0.203 ms | 0.268 ms | — |
-| Noise filter | 0.118 ms | 0.088 ms | 0.236 ms | 0.394 ms | — |
-| Feature extraction | 0.062 ms | 0.043 ms | 0.110 ms | 0.146 ms | — |
+| Section | Avg | p50 | p95 | p99 |
+|---|---|---|---|---|
+| Gesture engine | 0.115 ms | 0.094 ms | 0.203 ms | 0.268 ms |
+| Noise filter | 0.118 ms | 0.088 ms | 0.236 ms | 0.394 ms |
+| Feature extraction | 0.062 ms | 0.043 ms | 0.110 ms | 0.146 ms |
 
-These numbers are from the synthetic benchmark (no camera or MediaPipe overhead). In practice, MediaPipe hand detection dominates the frame budget at 15–25 ms per frame. The gesture engine and noise filter together add under 0.5 ms at p99, confirming that the processing pipeline is not the bottleneck.
-
-### 6.2 Why Percentiles Matter
-
-A system averaging 30 FPS might still stutter. If p99 frame time is 80ms, one in every hundred frames takes nearly three frame-budgets to process. The user perceives this as a hitch every few seconds. Mean FPS masks these spikes entirely. The profiler reports p50/p95/p99 for both individual pipeline sections and total frame time, and the benchmark module does the same for the raw-vs-smoothed comparison.
+These are from the synthetic benchmark — no camera, no MediaPipe. In production, MediaPipe dominates at 15–25 ms per frame. The gesture engine and noise filter together add under 0.5 ms even at p99. The processing pipeline is definitively not the bottleneck.
 
 ---
 
-## 7. Design Decisions and Tradeoffs
+## Design Decisions I'd Make Again
 
-### 7.1 Why Not Just ML?
+**Hybrid over pure ML.** A pure ML system needs training data for every gesture, every condition. It needs retraining for new gestures. It has no fallback for out-of-distribution poses. The hybrid approach gives you a working system immediately and lets ML gradually improve the edges. Worth the extra complexity every time.
 
-A pure ML approach would require:
-- Training data for every gesture, every lighting condition, every hand size
-- Retraining whenever a new gesture is added
-- No fallback when the model encounters an out-of-distribution hand pose
+**One-euro filter over Kalman.** Kalman filters want a motion model, and hand gestures are inherently unpredictable — the hand can stop, reverse, or change speed at any moment. The one-euro filter's speed-adaptive cutoff handles this natively. Two parameters to tune instead of a full state-space model. Simpler to implement, simpler to reason about.
 
-The hybrid approach gives you a working system on day zero (rules only) and lets the ML model gradually improve gesture boundaries as training data accumulates. The 0.75 confidence threshold is deliberately conservative — the ML model has to be quite sure before it overrides a rule that's been manually validated.
+**Feature-level rotation invariance over data augmentation.** You could augment training data with rotated copies instead of computing invariant features. But the feature approach needs zero extra data, works for both rule-based and ML detection identically, and is testable — rotate landmarks, assert features match. Data augmentation grows training time and model size and still doesn't guarantee invariance at angles you didn't include.
 
-### 7.2 Why the One-Euro Filter Over a Kalman Filter?
-
-Kalman filters are the textbook answer for noisy time-series data, but they assume a known motion model. Hand gestures are inherently unpredictable — the hand can stop, reverse, or change speed at any moment. The one-euro filter's speed-adaptive cutoff handles this naturally: smooth when still, responsive when moving. It's also simpler to implement and tune (two parameters vs. a full state-space model).
-
-### 7.3 Rotation Invariance: Local Frame vs. Data Augmentation
-
-An alternative to computing rotation-invariant features is to augment the training data with rotated copies. We chose the feature-level approach because:
-- It requires zero additional training data
-- It works identically for rule-based and ML detection
-- It's verifiable through unit tests (rotate landmarks, assert features match)
-- Data augmentation increases training time and model size without guaranteeing invariance at unseen angles
-
-### 7.4 Hysteresis Everywhere
-
-Hysteresis appears in three places: finger state detection (separate open/close thresholds), pinch detection (0.28 on / 0.40 off), and gesture debouncing (N frames must agree). This is not accidental — any threshold-based classification on noisy continuous signals will flicker at the boundary. Hysteresis is the simplest and most predictable solution. The alternative (confidence smoothing or probabilistic state machines) adds complexity without meaningful accuracy gains for the gesture vocabulary we're working with.
+**Hysteresis everywhere.** It shows up in finger state detection, pinch detection, and gesture debouncing. Three separate places, same principle: any threshold on a noisy continuous signal will flicker at the boundary. Hysteresis is the simplest fix and the most predictable one. I looked at confidence smoothing and probabilistic state machines as alternatives — they add complexity without meaningful accuracy gains for the gesture set we're working with.
 
 ---
 
-## 8. Testing Strategy
+## Testing
 
-The test suite covers 78 cases across four modules:
+96 tests across five modules. All deterministic synthetic data, no camera, no MediaPipe, no randomness. A test that passes once passes every time.
 
-- **Gesture engine** (23 tests): Each gesture is tested with synthetic landmark data positioned at exact joint angles. Edge cases include partially curled fingers, hysteresis boundary conditions, and debounce timing.
-- **Noise filter** (17 tests): One-euro filter convergence, velocity clamping at exact thresholds, confidence score warmup, and stability transitions.
-- **Profiler** (15 tests): Rolling window behavior, percentile computation (including edge cases with empty data), and summary dictionary structure.
-- **ML features** (23 tests): Feature vector length, scale invariance (same features at 2× hand size), rotation invariance at 45° and 90°, and the `_rotate_to_local` coordinate frame transformation (verifying wrist maps to origin, middle MCP maps to y-axis).
-
-All tests use deterministic synthetic data — no camera, no MediaPipe, no randomness. A test that passes once passes every time.
+The gesture engine tests (25 tests) cover each gesture with synthetic landmarks at exact joint angles, plus edge cases — partially curled fingers, hysteresis boundary conditions, debounce timing, multi-hand locking. The noise filter tests (17) verify one-euro convergence, velocity clamping thresholds, confidence warmup, stability transitions. The profiler tests (15) hit rolling window behavior, percentile math with edge cases, and summary dictionary structure. The ML feature tests (23) check feature vector dimensions, scale/rotation/translation invariance, and the coordinate frame transformation. The distribution shift tests (17) sweep hand sizes from 0.5× to 2.5×, simulate different camera FOVs, vary lighting noise from 2–15px, test rotations from -60° to +90°, combine multiple shifts, and assert that the system fails under documented bad conditions — documenting the limits, not hiding them.
 
 ---
 
-## 9. Limitations and Future Work
+## What's Missing
 
-**Depth axis**: The current feature vector uses only x/y coordinates from the 2D projection. MediaPipe does provide z-values (relative depth), but they're significantly noisier than x/y. Incorporating z-features with appropriate filtering could improve classification of gestures that differ primarily in depth (e.g., a flat palm vs. a palm tilted toward the camera).
+**Depth.** The feature vector only uses x/y from the 2D projection. MediaPipe does give you z-values but they're 3–5× noisier than x/y. Incorporating z with proper filtering could help distinguish gestures that only differ in depth (flat palm vs. tilted palm), but right now it's too noisy to be useful.
 
-**Temporal gestures**: The system classifies each frame independently. Gestures defined by motion trajectories (swipe, circle, wave) would require sequence modeling — either rule-based state machines or recurrent neural architectures.
+**Temporal gestures.** Every frame gets classified independently. Swipes, circles, waves — anything defined by a trajectory — would need sequence modeling. State machines at minimum, or something like an LSTM if you wanted to get serious about it. The debounce logic gives some frame-to-frame continuity but it's not trajectory-aware.
 
-**Personalization**: Joint angles and distance ratios vary between individuals. A calibration step that adjusts thresholds to the user's hand proportions could improve accuracy, particularly for the thumb (which has the highest anatomical variability).
+**Per-user calibration.** Joint angles and distance ratios vary between people. A calibration step that adjusts thresholds to the individual user's hand proportions would probably help, especially for the thumb — it has the most anatomical variation across people.
 
-**Lighting robustness**: MediaPipe's detection confidence degrades in low light. The confidence scoring system partially compensates (by signaling low-confidence frames), but the detection model itself is the limiting factor.
-
----
-
-## 10. Conclusion
-
-Building a reliable gesture recognition system is less about the detection model and more about everything around it: filtering noisy inputs, stabilizing classification decisions, engineering features that survive real-world variation, and making the whole pipeline observable enough to debug. The hybrid rule-based/ML architecture lets each approach cover the other's weaknesses — rules provide deterministic reliability, ML provides adaptive precision. Percentile-based profiling, rotation-invariant features, and per-frame override logging turn what could be a black box into a system you can actually reason about.
-
-The full source code, including the benchmark suite and test coverage, is available in the project repository.
+**Lighting.** MediaPipe's detection confidence drops in low light. The confidence scoring system flags it, but there's only so much you can do downstream when the detection model itself is struggling.
 
 ---
 
-*Framework built with Python, OpenCV, MediaPipe, and scikit-learn. Tested on Fedora Linux with a consumer webcam at 640×480 resolution.*
+## Wrapping Up
+
+The interesting part of building a gesture recognition system isn't the detection model. It's everything around it — filtering noisy input so drawing doesn't look terrible, stabilizing decisions so the gesture doesn't flicker, engineering features that survive the real world, and making the pipeline observable enough that when something goes wrong you can figure out why. The hybrid architecture lets rules and ML cover each other's weaknesses. Percentile profiling, rotation-invariant features, and per-frame override logging turn what could easily be a black box into something you can actually debug and reason about.
+
+Full source is in the repository, including the benchmark suite and all tests.
+
+---
