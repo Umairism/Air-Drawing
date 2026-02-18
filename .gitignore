@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.pyo
+gesture_data.csv
+gesture_model.pkl
+.vscode/
