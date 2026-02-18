@@ -1,6 +1,7 @@
 import mediapipe as mp
 import cv2
 import os
+import time
 from app.config import MAX_HANDS, DETECTION_CONFIDENCE, TRACKING_CONFIDENCE, DETECTION_WIDTH, PROCESS_EVERY_N_FRAMES
 
 # new tasks API
@@ -31,7 +32,7 @@ class HandTracker:
             min_tracking_confidence=track_conf,
         )
         self.landmarker = HandLandmarker.create_from_options(options)
-        self._frame_ts = 0
+        self._start_time = time.monotonic()
         self._last_result = None
         self._last_landmarks_raw = []
         self._last_hand_data = {"left": None, "right": None}
@@ -46,10 +47,9 @@ class HandTracker:
         """
         self._frame_count += 1
 
-        # skip detection on some frames, reuse last result
-        should_skip = self._frame_count % self._skip_n != 0
+        # only skip frames if we already have hands tracked and skip_n > 1
         has_data = self._last_hand_data["left"] is not None or self._last_hand_data["right"] is not None
-        if should_skip and has_data:
+        if self._skip_n > 1 and has_data and (self._frame_count % self._skip_n != 0):
             return self._last_hand_data
 
         h, w, _ = frame.shape
@@ -60,8 +60,9 @@ class HandTracker:
         rgb_small = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_small)
 
-        self._frame_ts += 33
-        result = self.landmarker.detect_for_video(mp_image, self._frame_ts)
+        # use real time so mediapipe tracking doesnt drift
+        ts_ms = int((time.monotonic() - self._start_time) * 1000)
+        result = self.landmarker.detect_for_video(mp_image, ts_ms)
         self._last_result = result
 
         hand_data = {"left": None, "right": None}

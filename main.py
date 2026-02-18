@@ -40,7 +40,8 @@ def main():
 
     color_changed = False
     brush_switched = False
-    grab_start = None  # tracks where the grab started
+    grab_start = None
+    self_idle_count = 0
 
     print("Air Drawing started. Press 'q' to quit, 'c' to clear, 's' to save drawing, 'f' to save full frame.")
 
@@ -68,9 +69,18 @@ def main():
         # handle gestures
         if gesture == "draw":
             state.set_drawing(True)
+            if state.current_tool == "eraser":
+                state.set_tool("pen")
             tool = tools[state.current_tool]
             if state.prev_point and tip_pos:
-                tool.draw(canvas, state.prev_point, tip_pos, state.color)
+                # sanity check - dont draw huge jumps (hand re-entry)
+                dx = abs(tip_pos[0] - state.prev_point[0])
+                dy = abs(tip_pos[1] - state.prev_point[1])
+                if dx < 120 and dy < 120:
+                    tool.draw(canvas, state.prev_point, tip_pos, state.color)
+                else:
+                    # too far, start a new stroke
+                    canvas.finish_stroke()
             state.prev_point = tip_pos
             color_changed = False
             brush_switched = False
@@ -90,6 +100,7 @@ def main():
             color_changed = False
             brush_switched = False
 
+        # also clear prev_point when entering non-draw states
         elif gesture == "erase":
             state.set_tool("eraser")
             state.set_drawing(True)
@@ -124,12 +135,21 @@ def main():
             grab_start = None
 
         else:
-            # idle
+            # idle - only reset prev_point after a few frames
+            # so brief flickers dont break the stroke
             state.set_drawing(False)
-            canvas.finish_stroke()
+            if self_idle_count > 4:
+                canvas.finish_stroke()
+                state.prev_point = None
             color_changed = False
             brush_switched = False
             grab_start = None
+
+        # track how long weve been idle
+        if gesture == "idle":
+            self_idle_count += 1
+        else:
+            self_idle_count = 0
 
         # draw landmarks if enabled
         if SHOW_LANDMARKS:
@@ -139,7 +159,7 @@ def main():
         frame = canvas.blend_onto(frame)
 
         # draw UI
-        frame = ui.draw_overlay(frame, state)
+        frame = ui.draw_overlay(frame, state, gesture)
 
         cv2.imshow("Air Drawing", frame)
 

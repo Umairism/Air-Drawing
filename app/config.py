@@ -6,10 +6,10 @@ CAMERA_INDEX = 0
 
 # mediapipe
 MAX_HANDS = 2
-DETECTION_CONFIDENCE = 0.7
-TRACKING_CONFIDENCE = 0.6
+DETECTION_CONFIDENCE = 0.55
+TRACKING_CONFIDENCE = 0.5
 DETECTION_WIDTH = 480     # process at lower res for speed
-PROCESS_EVERY_N_FRAMES = 2  # skip frames for detection
+PROCESS_EVERY_N_FRAMES = 1  # process every frame for gesture accuracy
 
 # drawing defaults
 DEFAULT_COLOR = (255, 50, 50)   # blueish

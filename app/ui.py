@@ -16,7 +16,7 @@ class UI:
         self.fps = int(1 / dt) if dt > 0 else 0
         self.prev_time = now
 
-    def draw_overlay(self, frame, state):
+    def draw_overlay(self, frame, state, gesture_name=None):
         """draw all the UI elements onto the frame"""
         self.update_fps()
         h, w = frame.shape[:2]
@@ -48,5 +48,13 @@ class UI:
         # current color indicator dot - below tool name
         cv2.circle(frame, (w // 2, 55), 10, state.color, -1)
         cv2.circle(frame, (w // 2, 55), 10, (255, 255, 255), 1)
+
+        # show detected gesture at bottom center
+        if gesture_name:
+            gtext = f"Gesture: {gesture_name}"
+            gsz = cv2.getTextSize(gtext, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
+            gx = (w - gsz[0]) // 2
+            cv2.putText(frame, gtext, (gx, h - 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
         return frame

@@ -5,185 +5,256 @@ from app.config import DEBOUNCE_FRAMES, GESTURE_COOLDOWN
 
 class GestureEngine:
     """
-    takes raw landmark data and figures out what gesture the user is making.
-    handles debouncing so we dont get jittery switches.
+    converts hand landmark data into gesture names.
+    uses a combo of joint angles and tip-to-palm distance ratios
+    so it works regardless of how far your hand is from the camera.
     """
 
-    # landmark indices
+    # landmark ids
+    WRIST = 0
+    THUMB_CMC = 1
+    THUMB_MCP = 2
+    THUMB_IP = 3
     THUMB_TIP = 4
+    INDEX_MCP = 5
+    INDEX_PIP = 6
+    INDEX_DIP = 7
     INDEX_TIP = 8
+    MIDDLE_MCP = 9
+    MIDDLE_PIP = 10
+    MIDDLE_DIP = 11
     MIDDLE_TIP = 12
+    RING_MCP = 13
+    RING_PIP = 14
+    RING_DIP = 15
     RING_TIP = 16
+    PINKY_MCP = 17
+    PINKY_PIP = 18
+    PINKY_DIP = 19
     PINKY_TIP = 20
 
-    THUMB_IP = 3
-    INDEX_PIP = 6
-    INDEX_MCP = 5
-    MIDDLE_PIP = 10
-    RING_PIP = 14
-    PINKY_PIP = 18
-
-    WRIST = 0
-    MIDDLE_MCP = 9
-
-    # how far tip needs to be above PIP to count as "up" (in pixels)
-    FINGER_UP_MARGIN = 15
-    # how far tip needs to be below PIP to count as "down"
-    FINGER_DOWN_MARGIN = 10
-    # pinch distance threshold
-    PINCH_THRESHOLD = 30
+    # pinch thresholds (relative to hand size)
+    PINCH_RATIO_ON = 0.28
+    PINCH_RATIO_OFF = 0.40
 
     def __init__(self):
         self.last_gesture = "idle"
         self.confirmed_gesture = "idle"
         self.gesture_counter = 0
         self.last_switch_time = 0
-        self.debounce_threshold = DEBOUNCE_FRAMES
-        # track finger states with hysteresis to avoid flickering
-        self._finger_states = [False] * 5
-        # which hand we're using for drawing - stick with it once chosen
-        self._active_hand = None
 
-    def get_finger_states(self, landmarks):
-        """
-        figure out which fingers are up with a margin so slight bends
-        dont cause flickering.
-        """
+        self._finger_states = [False] * 5
+        self._active_hand = None
+        self._pinching = False
+
+        # smoothing buffer
+        self._lm_history = []
+        self._history_size = 3
+
+    def _lm_dict(self, landmarks):
+        lm = {}
+        if landmarks is None:
+            return lm
+        for idx, x, y, z in landmarks:
+            lm[idx] = (float(x), float(y), float(z))
+        return lm
+
+    def _smooth_landmarks(self, lm):
+        self._lm_history.append(lm)
+        if len(self._lm_history) > self._history_size:
+            self._lm_history = self._lm_history[-self._history_size:]
+
+        if len(self._lm_history) < 2:
+            return lm
+
+        smoothed = {}
+        for key in lm:
+            xs, ys, zs = [], [], []
+            for hist in self._lm_history:
+                if key in hist:
+                    xs.append(hist[key][0])
+                    ys.append(hist[key][1])
+                    zs.append(hist[key][2])
+            if xs:
+                smoothed[key] = (sum(xs)/len(xs), sum(ys)/len(ys), sum(zs)/len(zs))
+        return smoothed
+
+    def _dist(self, a, b):
+        return math.sqrt((a[0]-b[0])**2 + (a[1]-b[1])**2)
+
+    def _hand_size(self, lm):
+        if self.WRIST in lm and self.MIDDLE_MCP in lm:
+            return self._dist(lm[self.WRIST], lm[self.MIDDLE_MCP])
+        return 100.0
+
+    def _angle_at(self, a, b, c):
+        ba = (a[0]-b[0], a[1]-b[1])
+        bc = (c[0]-b[0], c[1]-b[1])
+        dot = ba[0]*bc[0] + ba[1]*bc[1]
+        mag_ba = math.sqrt(ba[0]**2 + ba[1]**2)
+        mag_bc = math.sqrt(bc[0]**2 + bc[1]**2)
+        if mag_ba < 0.001 or mag_bc < 0.001:
+            return 180.0
+        cos_a = max(-1.0, min(1.0, dot/(mag_ba*mag_bc)))
+        return math.degrees(math.acos(cos_a))
+
+    def _is_finger_open(self, lm, mcp, pip, dip, tip, finger_idx):
+        if not all(k in lm for k in (mcp, pip, dip, tip)):
+            return self._finger_states[finger_idx]
+
+        pip_angle = self._angle_at(lm[mcp], lm[pip], lm[dip])
+
+        wrist = lm.get(self.WRIST)
+        if wrist:
+            tip_dist = self._dist(lm[tip], wrist)
+            pip_dist = self._dist(lm[pip], wrist)
+            tip_further = tip_dist > pip_dist * 0.85
+        else:
+            tip_further = True
+
+        was_open = self._finger_states[finger_idx]
+
+        if was_open:
+            if pip_angle < 115 or (pip_angle < 135 and not tip_further):
+                return False
+            return True
+        else:
+            if pip_angle > 145 and tip_further:
+                return True
+            if pip_angle > 160:
+                return True
+            return False
+
+    def _is_thumb_open(self, lm):
+        needed = [self.THUMB_CMC, self.THUMB_MCP, self.THUMB_IP, self.THUMB_TIP, self.INDEX_MCP]
+        if not all(k in lm for k in needed):
+            return self._finger_states[0]
+
+        mcp_angle = self._angle_at(lm[self.THUMB_CMC], lm[self.THUMB_MCP], lm[self.THUMB_IP])
+        ip_angle = self._angle_at(lm[self.THUMB_MCP], lm[self.THUMB_IP], lm[self.THUMB_TIP])
+        avg_angle = (mcp_angle + ip_angle) / 2.0
+
+        hand_sz = self._hand_size(lm)
+        thumb_spread = self._dist(lm[self.THUMB_TIP], lm[self.INDEX_MCP])
+        spread_ratio = thumb_spread / hand_sz if hand_sz > 1 else 0
+
+        was_open = self._finger_states[0]
+        if was_open:
+            if avg_angle < 100 or spread_ratio < 0.25:
+                return False
+            return True
+        else:
+            if avg_angle > 135 and spread_ratio > 0.4:
+                return True
+            if avg_angle > 150:
+                return True
+            return False
+
+    def get_finger_states(self, landmarks, handedness="right"):
         if landmarks is None:
             return [False] * 5
 
-        lm = {}
-        for idx, x, y, z in landmarks:
-            lm[idx] = (x, y)
+        lm = self._lm_dict(landmarks)
+        lm = self._smooth_landmarks(lm)
 
-        fingers = list(self._finger_states)  # start from previous state
+        fingers = list(self._finger_states)
+        fingers[0] = self._is_thumb_open(lm)
 
-        # thumb - x comparison with margin
-        if self.THUMB_TIP in lm and self.THUMB_IP in lm:
-            diff = lm[self.THUMB_IP][0] - lm[self.THUMB_TIP][0]
-            if diff > self.FINGER_UP_MARGIN:
-                fingers[0] = True
-            elif diff < -self.FINGER_DOWN_MARGIN:
-                fingers[0] = False
-
-        # other 4 fingers - y comparison with margin
-        pairs = [
-            (self.INDEX_TIP, self.INDEX_PIP, 1),
-            (self.MIDDLE_TIP, self.MIDDLE_PIP, 2),
-            (self.RING_TIP, self.RING_PIP, 3),
-            (self.PINKY_TIP, self.PINKY_PIP, 4),
+        joints = [
+            (self.INDEX_MCP, self.INDEX_PIP, self.INDEX_DIP, self.INDEX_TIP, 1),
+            (self.MIDDLE_MCP, self.MIDDLE_PIP, self.MIDDLE_DIP, self.MIDDLE_TIP, 2),
+            (self.RING_MCP, self.RING_PIP, self.RING_DIP, self.RING_TIP, 3),
+            (self.PINKY_MCP, self.PINKY_PIP, self.PINKY_DIP, self.PINKY_TIP, 4),
         ]
-        for tip, pip, i in pairs:
-            if tip in lm and pip in lm:
-                diff = lm[pip][1] - lm[tip][1]  # positive means tip is above pip
-                if diff > self.FINGER_UP_MARGIN:
-                    fingers[i] = True
-                elif diff < -self.FINGER_DOWN_MARGIN:
-                    fingers[i] = False
+        for mcp, pip, dip, tip, i in joints:
+            fingers[i] = self._is_finger_open(lm, mcp, pip, dip, tip, i)
 
         self._finger_states = fingers
         return fingers
 
-    def _get_pinch_dist(self, lm):
-        """distance between thumb tip and index tip"""
-        thumb = lm.get(self.THUMB_TIP)
-        index = lm.get(self.INDEX_TIP)
-        if thumb and index:
-            dx = thumb[0] - index[0]
-            dy = thumb[1] - index[1]
-            return math.sqrt(dx * dx + dy * dy)
-        return 999
+    def _get_pinch_ratio(self, lm):
+        if self.THUMB_TIP not in lm or self.INDEX_TIP not in lm:
+            return 999.0
+        raw = self._dist(lm[self.THUMB_TIP], lm[self.INDEX_TIP])
+        hsz = self._hand_size(lm)
+        return raw / hsz if hsz > 1 else 999.0
 
     def recognize(self, hand_data):
-        """
-        main method. takes the hand_data dict from tracker and returns
-        a gesture string + the fingertip position for drawing + erase points.
-        always uses the same hand for drawing - defaults to right, sticks
-        with whichever hand it locked onto.
-        """
-        # pick which hand to use and stick with it
         right = hand_data.get("right")
         left = hand_data.get("left")
 
         if self._active_hand == "right" and right is not None:
-            landmarks = right
+            landmarks, handedness = right, "right"
         elif self._active_hand == "left" and left is not None:
-            landmarks = left
+            landmarks, handedness = left, "left"
         elif right is not None:
-            landmarks = right
+            landmarks, handedness = right, "right"
             self._active_hand = "right"
         elif left is not None:
-            landmarks = left
+            landmarks, handedness = left, "left"
             self._active_hand = "left"
         else:
-            # no hands visible, reset lock so next hand gets picked fresh
             self._active_hand = None
-            landmarks = None
-
-        if landmarks is None:
+            self._finger_states = [False] * 5
+            self._pinching = False
+            self._lm_history.clear()
             return "idle", None, []
 
-        fingers = self.get_finger_states(landmarks)
+        fingers = self.get_finger_states(landmarks, handedness)
         thumb, index, middle, ring, pinky = fingers
 
-        lm = {}
-        for idx, x, y, z in landmarks:
-            lm[idx] = (x, y)
+        lm = self._lm_dict(landmarks)
+        lm_smooth = self._lm_history[-1] if self._lm_history else lm
 
-        tip_pos = lm.get(self.INDEX_TIP, None)
+        tip_pos = None
+        if self.INDEX_TIP in lm_smooth:
+            tip_pos = (int(lm_smooth[self.INDEX_TIP][0]),
+                       int(lm_smooth[self.INDEX_TIP][1]))
 
-        # palm center
         palm_pos = None
-        if self.WRIST in lm and self.MIDDLE_MCP in lm:
-            wx, wy = lm[self.WRIST]
-            mx, my = lm[self.MIDDLE_MCP]
-            palm_pos = ((wx + mx) // 2, (wy + my) // 2)
+        if self.WRIST in lm_smooth and self.MIDDLE_MCP in lm_smooth:
+            w = lm_smooth[self.WRIST]
+            m = lm_smooth[self.MIDDLE_MCP]
+            palm_pos = (int((w[0]+m[0])/2), int((w[1]+m[1])/2))
 
-        # erase points - whole hand
         erase_points = []
         if palm_pos:
             erase_points.append(palm_pos)
-        for tip_id in [self.THUMB_TIP, self.INDEX_TIP, self.MIDDLE_TIP, self.RING_TIP, self.PINKY_TIP]:
-            if tip_id in lm:
-                erase_points.append(lm[tip_id])
+        for tid in [self.THUMB_TIP, self.INDEX_TIP, self.MIDDLE_TIP,
+                    self.RING_TIP, self.PINKY_TIP]:
+            if tid in lm_smooth:
+                erase_points.append((int(lm_smooth[tid][0]),
+                                     int(lm_smooth[tid][1])))
 
-        # --- gesture detection with strict checks ---
-
-        pinch_dist = self._get_pinch_dist(lm)
+        pinch_ratio = self._get_pinch_ratio(lm_smooth)
+        up_count = sum([index, middle, ring, pinky])
         gesture = "idle"
 
-        # count how many fingers are clearly up/down
-        up_count = sum([index, middle, ring, pinky])
-        down_count = sum([not index, not middle, not ring, not pinky])
+        # pinch grab with hysteresis
+        if self._pinching:
+            if pinch_ratio > self.PINCH_RATIO_OFF:
+                self._pinching = False
+            else:
+                gesture = "grab"
+        else:
+            if pinch_ratio < self.PINCH_RATIO_ON and up_count <= 1:
+                self._pinching = True
+                gesture = "grab"
 
-        # pinch = grab (thumb+index pinched, other 3 fingers down)
-        if pinch_dist < self.PINCH_THRESHOLD and down_count >= 3:
-            gesture = "grab"
-
-        # draw = ONLY index up, other 3 must be down
-        elif index and not middle and not ring and not pinky:
-            gesture = "draw"
-
-        # erase = all 4 fingers clearly up
-        elif up_count == 4:
-            gesture = "erase"
-
-        # color change = index + middle up, ring + pinky must both be down
-        elif index and middle and not ring and not pinky:
-            gesture = "change_color"
-
-        # fist = all 5 down (including thumb)
-        elif down_count == 4 and not thumb:
-            gesture = "switch_brush"
+        if gesture != "grab":
+            if index and not middle and not ring and not pinky:
+                gesture = "draw"
+            elif up_count >= 3 and index and middle:
+                gesture = "erase"
+            elif index and middle and not ring and not pinky:
+                gesture = "change_color"
+            elif up_count == 0 and not thumb:
+                gesture = "switch_brush"
 
         gesture = self._debounce(gesture)
         return gesture, tip_pos, erase_points
 
     def _debounce(self, gesture):
-        """
-        require consistent readings before switching.
-        draw stays responsive, everything else needs more confirmation.
-        """
         now = time.time()
 
         if gesture == self.last_gesture:
@@ -192,26 +263,22 @@ class GestureEngine:
             self.gesture_counter = 1
             self.last_gesture = gesture
 
-        # draw needs to be snappy - 3 frames
-        if gesture == "draw":
+        if gesture in ("draw", "erase"):
+            if self.gesture_counter >= 2:
+                self.confirmed_gesture = gesture
+            return self.confirmed_gesture
+
+        if gesture == "grab":
             if self.gesture_counter >= 3:
                 self.confirmed_gesture = gesture
             return self.confirmed_gesture
 
-        # erase/grab need a bit more to avoid accidental triggers
-        if gesture in ("erase", "grab"):
-            if self.gesture_counter >= 4:
-                self.confirmed_gesture = gesture
-            return self.confirmed_gesture
-
-        # idle resets quickly
         if gesture == "idle":
             if self.gesture_counter >= 3:
                 self.confirmed_gesture = gesture
             return self.confirmed_gesture
 
-        # mode switches (color, brush) need the most confirmation
-        if self.gesture_counter >= self.debounce_threshold + 2:
+        if self.gesture_counter >= DEBOUNCE_FRAMES + 2:
             if now - self.last_switch_time >= GESTURE_COOLDOWN:
                 self.last_switch_time = now
                 self.confirmed_gesture = gesture
@@ -219,55 +286,44 @@ class GestureEngine:
         return self.confirmed_gesture
 
     def _raw_finger_states(self, landmarks):
-        """
-        simple finger check without hysteresis - used for multi-hand gestures
-        so it doesnt mess with the main hand's cached state.
-        """
         if landmarks is None:
             return [False] * 5
-
-        lm = {}
-        for idx, x, y, z in landmarks:
-            lm[idx] = (x, y)
-
+        lm = self._lm_dict(landmarks)
         fingers = []
 
-        # thumb
-        if self.THUMB_TIP in lm and self.THUMB_IP in lm:
-            fingers.append(lm[self.THUMB_IP][0] - lm[self.THUMB_TIP][0] > 10)
+        needed = [self.THUMB_CMC, self.THUMB_MCP, self.THUMB_IP, self.THUMB_TIP]
+        if all(k in lm for k in needed):
+            a1 = self._angle_at(lm[self.THUMB_CMC], lm[self.THUMB_MCP], lm[self.THUMB_IP])
+            a2 = self._angle_at(lm[self.THUMB_MCP], lm[self.THUMB_IP], lm[self.THUMB_TIP])
+            fingers.append((a1+a2)/2 > 130)
         else:
             fingers.append(False)
 
-        # other 4
-        pairs = [
-            (self.INDEX_TIP, self.INDEX_PIP),
-            (self.MIDDLE_TIP, self.MIDDLE_PIP),
-            (self.RING_TIP, self.RING_PIP),
-            (self.PINKY_TIP, self.PINKY_PIP),
+        joints = [
+            (self.INDEX_MCP, self.INDEX_PIP, self.INDEX_DIP, self.INDEX_TIP),
+            (self.MIDDLE_MCP, self.MIDDLE_PIP, self.MIDDLE_DIP, self.MIDDLE_TIP),
+            (self.RING_MCP, self.RING_PIP, self.RING_DIP, self.RING_TIP),
+            (self.PINKY_MCP, self.PINKY_PIP, self.PINKY_DIP, self.PINKY_TIP),
         ]
-        for tip, pip in pairs:
-            if tip in lm and pip in lm:
-                fingers.append(lm[pip][1] - lm[tip][1] > 10)
+        for mcp, pip, dip, tip in joints:
+            if all(k in lm for k in (mcp, pip, dip, tip)):
+                angle = self._angle_at(lm[mcp], lm[pip], lm[dip])
+                fingers.append(angle > 140)
             else:
                 fingers.append(False)
-
         return fingers
 
     def recognize_multi(self, hand_data):
-        """detect two-hand gestures."""
         left = hand_data.get("left")
         right = hand_data.get("right")
-
         if left is None or right is None:
             return None
 
-        left_fingers = self._raw_finger_states(left)
-        right_fingers = self._raw_finger_states(right)
+        lf = self._raw_finger_states(left)
+        rf = self._raw_finger_states(right)
 
-        if not any(left_fingers) and not any(right_fingers):
+        if not any(lf) and not any(rf):
             return "clear_canvas"
-
-        if all(left_fingers[1:]) and all(right_fingers[1:]):
+        if all(lf[1:]) and all(rf[1:]):
             return "pause"
-
         return None

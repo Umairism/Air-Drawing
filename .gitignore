@@ -6,3 +6,6 @@ gesture_model.pkl
 hand_landmarker.task
 .vscode/
 .venv/
+build/
+dist/
+*.spec
