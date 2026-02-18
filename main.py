@@ -8,7 +8,7 @@ from core.state_manager import StateManager
 from app.canvas import Canvas
 from app.tools import Pen, Brush, Eraser
 from app.ui import UI
-from app.config import CAMERA_WIDTH, CAMERA_HEIGHT, SHOW_LANDMARKS
+from app.config import SHOW_LANDMARKS
 
 
 def main():
@@ -22,7 +22,14 @@ def main():
     tracker = HandTracker()
     gesture_engine = GestureEngine()
     state = StateManager()
-    canvas = Canvas(CAMERA_WIDTH, CAMERA_HEIGHT)
+
+    # grab one frame to get actual resolution (camera might not match config)
+    ok, test_frame = cam.read()
+    if not ok:
+        print("cant read from camera")
+        sys.exit(1)
+    actual_h, actual_w = test_frame.shape[:2]
+    canvas = Canvas(actual_w, actual_h)
     ui = UI()
 
     tools = {
@@ -33,8 +40,12 @@ def main():
 
     color_changed = False
     brush_switched = False
+    grab_start = None  # tracks where the grab started
 
-    print("Air Drawing started. Press 'q' to quit, 'c' to clear canvas.")
+    print("Air Drawing started. Press 'q' to quit, 'c' to clear, 's' to save drawing, 'f' to save full frame.")
+
+    cv2.namedWindow("Air Drawing", cv2.WINDOW_NORMAL)
+    cv2.resizeWindow("Air Drawing", actual_w, actual_h)
 
     while True:
         ok, frame = cam.read()
@@ -52,7 +63,7 @@ def main():
             state.reset_prev_point()
 
         # single hand gesture
-        gesture, tip_pos = gesture_engine.recognize(hand_data)
+        gesture, tip_pos, erase_points = gesture_engine.recognize(hand_data)
 
         # handle gestures
         if gesture == "draw":
@@ -63,16 +74,32 @@ def main():
             state.prev_point = tip_pos
             color_changed = False
             brush_switched = False
+            grab_start = None
+
+        elif gesture == "grab":
+            # pinch to grab and move the canvas content
+            if tip_pos:
+                if grab_start is not None:
+                    dx = tip_pos[0] - grab_start[0]
+                    dy = tip_pos[1] - grab_start[1]
+                    if abs(dx) > 1 or abs(dy) > 1:
+                        canvas.shift_surface(dx, dy)
+                grab_start = tip_pos
+            state.set_drawing(False)
+            state.prev_point = None
+            color_changed = False
+            brush_switched = False
 
         elif gesture == "erase":
             state.set_tool("eraser")
             state.set_drawing(True)
             tool = tools["eraser"]
-            if tip_pos:
-                tool.draw(canvas, None, tip_pos, None)
+            for pt in erase_points:
+                tool.draw(canvas, None, pt, None)
             state.prev_point = None
             color_changed = False
             brush_switched = False
+            grab_start = None
 
         elif gesture == "change_color":
             if not color_changed:
@@ -80,6 +107,7 @@ def main():
                 color_changed = True
             state.set_drawing(False)
             brush_switched = False
+            grab_start = None
 
         elif gesture == "switch_brush":
             if not brush_switched:
@@ -93,6 +121,7 @@ def main():
                 brush_switched = True
             state.set_drawing(False)
             color_changed = False
+            grab_start = None
 
         else:
             # idle
@@ -100,6 +129,7 @@ def main():
             canvas.finish_stroke()
             color_changed = False
             brush_switched = False
+            grab_start = None
 
         # draw landmarks if enabled
         if SHOW_LANDMARKS:
@@ -114,12 +144,21 @@ def main():
         cv2.imshow("Air Drawing", frame)
 
         key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
+        if key == ord('q') or key == 27:  # q or ESC
             break
         elif key == ord('c'):
             canvas.clear()
             state.reset_prev_point()
+        elif key == ord('s'):
+            canvas.save_drawing()
+        elif key == ord('f'):
+            canvas.save_with_frame(frame)
 
+        # also quit if the window X button is clicked
+        if cv2.getWindowProperty("Air Drawing", cv2.WND_PROP_VISIBLE) < 1:
+            break
+
+    tracker.close()
     cam.release()
     cv2.destroyAllWindows()
 

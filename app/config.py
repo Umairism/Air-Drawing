@@ -1,13 +1,15 @@
 # all the settings live here so we dont scatter magic numbers everywhere
 
-CAMERA_WIDTH = 1280
-CAMERA_HEIGHT = 720
+CAMERA_WIDTH = 640
+CAMERA_HEIGHT = 480
 CAMERA_INDEX = 0
 
 # mediapipe
 MAX_HANDS = 2
 DETECTION_CONFIDENCE = 0.7
 TRACKING_CONFIDENCE = 0.6
+DETECTION_WIDTH = 480     # process at lower res for speed
+PROCESS_EVERY_N_FRAMES = 2  # skip frames for detection
 
 # drawing defaults
 DEFAULT_COLOR = (255, 50, 50)   # blueish
@@ -27,8 +29,8 @@ COLORS = [
 ]
 
 # gesture timing
-DEBOUNCE_FRAMES = 8
-GESTURE_COOLDOWN = 0.5  # seconds between gesture switches
+DEBOUNCE_FRAMES = 3
+GESTURE_COOLDOWN = 0.4  # seconds between gesture switches
 
 # ui
 SHOW_FPS = True
