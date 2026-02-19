@@ -11,9 +11,9 @@ Built with OpenCV for rendering, MediaPipe Tasks API for hand tracking, and NumP
 | Gesture | What it does |
 |---------|-------------|
 | Index finger up (others curled) | **Draw** on canvas |
-| Index + middle up | **Change color** (cycles through palette) |
-| All fingers open | **Erase** under your hand |
-| Fist | **Switch tool** between pen and brush |
+| Index + middle + ring up (pinky down) | **Change color** (cycles through palette) |
+| All five fingers open | **Erase** under your hand |
+| Four fingers up (thumb curled) | **Switch tool** between pen and brush |
 | Pinch (thumb + index) | **Grab and move** the drawing |
 | Both hands fist | **Clear** entire canvas |
 
@@ -97,10 +97,11 @@ Raw landmarks jitter frame-to-frame. We keep a rolling average of the last 3 fra
 | Finger state | Gesture |
 |-------------|---------|
 | Index up, rest down | draw |
-| Index + middle up, rest down | change_color |
-| 3+ fingers up | erase |
-| All down (fist) | switch_brush |
-| Thumb-index pinch, rest down | grab |
+| Index + middle up, rest down | idle |
+| Index + middle + ring up, pinky down | change_color |
+| Four fingers up (no thumb) | switch_brush |
+| All five fingers open | erase |
+| Thumb-index pinch | grab |
 | Nothing detected | idle |
 
 #### Debounce
@@ -309,7 +310,7 @@ Produces a single `dist/AirDrawing` binary (~140MB) with everything bundled. If 
 
 ## Tests
 
-70 tests covering the core gesture engine, noise filter, profiler, and ML feature extraction:
+59 tests covering the core gesture engine, noise filter, profiler, ML features, and distribution shift:
 
 ```bash
 python -m unittest discover -s tests -v
@@ -317,10 +318,10 @@ python -m unittest discover -s tests -v
 
 | Test suite | Count | What it covers |
 |-----------|-------|---------------|
-| test_gesture_engine | 23 | Finger detection, gesture mapping, debounce, multi-hand, edge cases |
+| test_gesture_engine | 25 | Finger detection, gesture mapping, debounce, multi-hand, edge cases |
 | test_noise_filter | 17 | Velocity clamping, one-euro smoothing, confidence scoring, reset |
-| test_profiler | 12 | Section timing, FPS calculation, summary output, window rolling |
-| test_ml_features | 18 | Feature extraction, position/scale invariance, different gestures, edge cases |
+| test_profiler | 15 | Section timing, FPS calculation, summary output, window rolling |
+| test_ml_features | 2 | Feature extraction, position/scale invariance |
 
 ---
 
@@ -380,4 +381,5 @@ Air-Drawing/
     test_noise_filter.py
     test_profiler.py
     test_ml_features.py
+    test_distribution_shift.py
 ```
