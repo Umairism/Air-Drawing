@@ -83,9 +83,9 @@ def main():
     # benchmark tracking
     gesture_counts = {}
     ml_override_count = 0
-    ml_agree_count = 0      # frames where ML and rules gave the same answer
-    ml_disagree_count = 0   # frames where they disagreed (ML not confident enough to override)
-    ml_predictions = []     # (rule_gesture, ml_gesture, ml_conf, was_overridden) per frame
+    ml_agree_count = 0
+    ml_disagree_count = 0
+    ml_predictions = []  # capped to last 500 for memory
     total_frames = 0
 
     # grab one frame to get actual resolution (camera might not match config)
@@ -202,6 +202,8 @@ def main():
                         )
 
                 ml_predictions.append((gesture, ml_gesture, ml_conf, overridden))
+                if len(ml_predictions) > 500:
+                    ml_predictions = ml_predictions[-500:]
 
         # track gesture distribution for benchmarking
         gesture_counts[gesture] = gesture_counts.get(gesture, 0) + 1

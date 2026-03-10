@@ -49,7 +49,7 @@ class GestureEngine:
 
         # smoothing buffer
         self._lm_history = []
-        self._history_size = 3
+        self._history_size = 2
 
     def _lm_dict(self, landmarks):
         lm = {}
@@ -62,21 +62,21 @@ class GestureEngine:
     def _smooth_landmarks(self, lm):
         self._lm_history.append(lm)
         if len(self._lm_history) > self._history_size:
-            self._lm_history = self._lm_history[-self._history_size:]
+            self._lm_history.pop(0)
 
         if len(self._lm_history) < 2:
             return lm
 
+        # fast path: with history_size=2, just average current + previous
+        prev = self._lm_history[0]
         smoothed = {}
         for key in lm:
-            xs, ys, zs = [], [], []
-            for hist in self._lm_history:
-                if key in hist:
-                    xs.append(hist[key][0])
-                    ys.append(hist[key][1])
-                    zs.append(hist[key][2])
-            if xs:
-                smoothed[key] = (sum(xs)/len(xs), sum(ys)/len(ys), sum(zs)/len(zs))
+            if key in prev:
+                pk = prev[key]
+                ck = lm[key]
+                smoothed[key] = ((pk[0]+ck[0])*0.5, (pk[1]+ck[1])*0.5, (pk[2]+ck[2])*0.5)
+            else:
+                smoothed[key] = lm[key]
         return smoothed
 
     def _dist(self, a, b):
@@ -115,13 +115,14 @@ class GestureEngine:
         was_open = self._finger_states[finger_idx]
 
         if was_open:
-            if pip_angle < 115 or (pip_angle < 135 and not tip_further):
+            # wider hysteresis band to avoid flickering
+            if pip_angle < 110 or (pip_angle < 130 and not tip_further):
                 return False
             return True
         else:
-            if pip_angle > 145 and tip_further:
+            if pip_angle > 140 and tip_further:
                 return True
-            if pip_angle > 160:
+            if pip_angle > 155:
                 return True
             return False
 
@@ -244,13 +245,15 @@ class GestureEngine:
         if gesture != "grab":
             if thumb and index and middle and ring and pinky:
                 gesture = "erase"
-            elif not thumb and index and middle and ring and pinky:
-                gesture = "switch_brush"
-            elif index and middle and ring and not pinky:
+            elif index and middle and not ring and not pinky:
+                # peace sign — natural and easy to hold
                 gesture = "change_color"
+            elif not thumb and index and middle and ring and not pinky:
+                # three fingers up (no thumb, no pinky)
+                gesture = "switch_brush"
             elif index and not middle and not ring and not pinky:
                 gesture = "draw"
-            elif index and middle and not ring and not pinky:
+            else:
                 gesture = "idle"
 
         gesture = self._debounce(gesture)
@@ -271,16 +274,16 @@ class GestureEngine:
             return self.confirmed_gesture
 
         if gesture == "grab":
-            if self.gesture_counter >= 3:
+            if self.gesture_counter >= 2:
                 self.confirmed_gesture = gesture
             return self.confirmed_gesture
 
         if gesture == "idle":
-            if self.gesture_counter >= 3:
+            if self.gesture_counter >= 2:
                 self.confirmed_gesture = gesture
             return self.confirmed_gesture
 
-        if self.gesture_counter >= DEBOUNCE_FRAMES + 2:
+        if self.gesture_counter >= DEBOUNCE_FRAMES:
             if now - self.last_switch_time >= GESTURE_COOLDOWN:
                 self.last_switch_time = now
                 self.confirmed_gesture = gesture

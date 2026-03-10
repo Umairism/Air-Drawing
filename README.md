@@ -11,9 +11,9 @@ Built with OpenCV for rendering, MediaPipe Tasks API for hand tracking, and NumP
 | Gesture | What it does |
 |---------|-------------|
 | Index finger up (others curled) | **Draw** on canvas |
-| Index + middle + ring up (pinky down) | **Change color** (cycles through palette) |
+| Peace sign (index + middle up) | **Change color** (cycles through palette) |
 | All five fingers open | **Erase** under your hand |
-| Four fingers up (thumb curled) | **Switch tool** between pen and brush |
+| Three fingers up (index + middle + ring, no thumb/pinky) | **Switch tool** between pen and brush |
 | Pinch (thumb + index) | **Grab and move** the drawing |
 | Both hands fist | **Clear** entire canvas |
 

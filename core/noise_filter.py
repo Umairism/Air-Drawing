@@ -139,7 +139,7 @@ class NoiseFilter:
             self.reset()
             return None
 
-        now = time.monotonic()
+        now = time.perf_counter()
         dt = 0.033  # assume ~30fps if we cant measure
         if self._prev_time is not None:
             dt = max(now - self._prev_time, 0.001)
@@ -181,17 +181,18 @@ class NoiseFilter:
         """
         clamped = {}
         max_move = self.MAX_VELOCITY * (dt / 0.033)  # scale with dt
+        max_move_sq = max_move * max_move  # avoid sqrt in the hot loop
 
         for idx, (x, y, z) in current.items():
             if idx in self._prev_lm:
                 px, py, _ = self._prev_lm[idx]
                 dx = x - px
                 dy = y - py
-                dist = math.sqrt(dx * dx + dy * dy)
+                dist_sq = dx * dx + dy * dy
 
-                if dist > max_move:
+                if dist_sq > max_move_sq:
                     # clamp to max distance in same direction
-                    scale = max_move / dist
+                    scale = max_move / math.sqrt(dist_sq)
                     x = px + dx * scale
                     y = py + dy * scale
 

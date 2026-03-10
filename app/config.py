@@ -5,11 +5,11 @@ CAMERA_HEIGHT = 480
 CAMERA_INDEX = 0
 
 # mediapipe
-MAX_HANDS = 2
-DETECTION_CONFIDENCE = 0.55
+MAX_HANDS = 1
+DETECTION_CONFIDENCE = 0.5
 TRACKING_CONFIDENCE = 0.5
-DETECTION_WIDTH = 480     # process at lower res for speed
-PROCESS_EVERY_N_FRAMES = 1  # process every frame for gesture accuracy
+DETECTION_WIDTH = 320     # process at lower res for speed
+PROCESS_EVERY_N_FRAMES = 2  # process every 2nd frame, reuse last result
 
 # drawing defaults
 DEFAULT_COLOR = (255, 50, 50)   # blueish
@@ -34,7 +34,7 @@ GESTURE_COOLDOWN = 0.5  # seconds between mode switches (color/brush)
 
 # ui
 SHOW_FPS = True
-SHOW_LANDMARKS = True
+SHOW_LANDMARKS = False
 UI_FONT_SCALE = 0.6
 UI_THICKNESS = 2
 
@@ -54,4 +54,4 @@ ML_CONFIDENCE_THRESHOLD = 0.75
 ML_MODEL_PATH = "gesture_model.pkl"
 
 # benchmarking (writes session metrics to benchmark_log.json on exit)
-BENCHMARK_ENABLED = True
+BENCHMARK_ENABLED = False

@@ -14,9 +14,14 @@ class Camera:
 
         # try a few times in case the camera is slow to init
         for attempt in range(3):
-            self.cap = cv2.VideoCapture(src)
+            # prefer DirectShow on Windows for lower latency
+            backend = cv2.CAP_DSHOW if hasattr(cv2, 'CAP_DSHOW') else cv2.CAP_ANY
+            self.cap = cv2.VideoCapture(src, backend)
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            # minimize internal buffer to avoid stale frames
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            self.cap.set(cv2.CAP_PROP_FPS, 30)
             if self.cap.isOpened():
                 break
             print(f"camera not ready, retrying ({attempt + 1}/3)...")

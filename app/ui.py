@@ -34,7 +34,7 @@ class UI:
         self.fps = int(sum(self._fps_samples) / len(self._fps_samples)) if self._fps_samples else 0
 
     def _draw_pill(self, frame, text, x, y, color, bg=(40, 40, 40)):
-        """draw text with a rounded pill-shaped background"""
+        """draw text with a dark background rectangle"""
         font = cv2.FONT_HERSHEY_SIMPLEX
         scale = 0.55
         thick = 1
@@ -43,11 +43,7 @@ class UI:
         x1, y1 = x, y - sz[1] - pad_y
         x2, y2 = x + sz[0] + pad_x * 2, y + pad_y + baseline
 
-        # semi-transparent background
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (x1, y1), (x2, y2), bg, -1)
-        cv2.addWeighted(overlay, 0.65, frame, 0.35, 0, frame)
-
+        cv2.rectangle(frame, (x1, y1), (x2, y2), bg, -1)
         cv2.putText(frame, text, (x + pad_x, y), font, scale, color, thick, cv2.LINE_AA)
         return x2  # return right edge for chaining
 

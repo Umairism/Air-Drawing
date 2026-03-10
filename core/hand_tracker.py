@@ -1,6 +1,7 @@
 import mediapipe as mp
 import cv2
 import os
+import sys
 import time
 from app.config import MAX_HANDS, DETECTION_CONFIDENCE, TRACKING_CONFIDENCE, DETECTION_WIDTH, PROCESS_EVERY_N_FRAMES
 
@@ -12,7 +13,9 @@ RunningMode = mp.tasks.vision.RunningMode
 HandConnections = mp.tasks.vision.HandLandmarksConnections
 
 # figure out where the model file is (same dir as project root)
-MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "hand_landmarker.task")
+# when running as a PyInstaller bundle, sys._MEIPASS points to the temp dir
+_base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.dirname(__file__)))
+MODEL_PATH = os.path.join(_base_dir, "hand_landmarker.task")
 
 
 class HandTracker:
@@ -47,16 +50,17 @@ class HandTracker:
         """
         self._frame_count += 1
 
-        # only skip frames if we already have hands tracked and skip_n > 1
-        has_data = self._last_hand_data["left"] is not None or self._last_hand_data["right"] is not None
-        if self._skip_n > 1 and has_data and (self._frame_count % self._skip_n != 0):
+        # skip frames to save CPU — always skip on alternate frames
+        # (not just when a hand is tracked)
+        if self._skip_n > 1 and (self._frame_count % self._skip_n != 0):
             return self._last_hand_data
 
         h, w, _ = frame.shape
 
-        # downscale for detection - way faster
+        # downscale for detection — INTER_AREA is best for shrinking
         scale = self._det_width / w
-        small = cv2.resize(frame, (self._det_width, int(h * scale)))
+        small = cv2.resize(frame, (self._det_width, int(h * scale)),
+                           interpolation=cv2.INTER_AREA)
         rgb_small = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_small)
 
